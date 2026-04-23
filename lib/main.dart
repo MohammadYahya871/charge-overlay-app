@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -258,11 +259,25 @@ class OverlayNotificationItem {
     required this.appName,
     required this.title,
     required this.message,
+    required this.packageName,
+    this.iconBytes,
   });
 
   final String appName;
   final String title;
   final String message;
+  final String packageName;
+  final Uint8List? iconBytes;
+
+  bool get isWhatsApp {
+    final pkg = packageName.toLowerCase();
+    return pkg == 'com.whatsapp' ||
+        pkg == 'com.whatsapp.w4b' ||
+        pkg.startsWith('com.whatsapp');
+  }
+
+  String get dedupeKey =>
+      '$packageName|$appName|$title|$message|${iconBytes?.length ?? 0}';
 
   static OverlayNotificationItem? fromEvent(dynamic event) {
     if (event is! Map) {
@@ -272,13 +287,25 @@ class OverlayNotificationItem {
     final appName = (map['appName'] as String? ?? '').trim();
     final title = (map['title'] as String? ?? '').trim();
     final message = (map['message'] as String? ?? '').trim();
+    final packageName = (map['packageName'] as String? ?? '').trim();
     if (appName.isEmpty && title.isEmpty && message.isEmpty) {
       return null;
     }
+
+    Uint8List? iconBytes;
+    final rawIcon = map['iconBytes'];
+    if (rawIcon is Uint8List) {
+      iconBytes = rawIcon;
+    } else if (rawIcon is List) {
+      iconBytes = Uint8List.fromList(rawIcon.cast<int>());
+    }
+
     return OverlayNotificationItem(
       appName: appName,
       title: title,
       message: message,
+      packageName: packageName,
+      iconBytes: iconBytes,
     );
   }
 }
@@ -721,11 +748,17 @@ class _ChargingOverlayScreenState extends State<ChargingOverlayScreen>
   Timer? _closeTimer;
   Timer? _clockTimer;
   Timer? _estimateTimer;
-  Timer? _notificationTimer;
+  Timer? _generalNotificationTimer;
+  Timer? _whatsappNotificationTimer;
   DateTime _now = DateTime.now();
   DateTime _lastLevelSync = DateTime.now();
   bool _showAnalogClock = false;
-  OverlayNotificationItem? _notificationItem;
+  OverlayNotificationItem? _generalNotification;
+  OverlayNotificationItem? _whatsappNotification;
+
+  static const Duration _notificationDisplayDuration = Duration(seconds: 6);
+  static const Duration _notificationTransitionDuration =
+      Duration(milliseconds: 650);
   late final AnimationController _introController = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 550),
@@ -766,18 +799,39 @@ class _ChargingOverlayScreenState extends State<ChargingOverlayScreen>
           if (!mounted || item == null) {
             return;
           }
-          _notificationTimer?.cancel();
-          setState(() {
-            _notificationItem = item;
-          });
-          _notificationTimer = Timer(const Duration(milliseconds: 2800), () {
-            if (!mounted) {
-              return;
-            }
+          if (item.isWhatsApp) {
+            _whatsappNotificationTimer?.cancel();
             setState(() {
-              _notificationItem = null;
+              _whatsappNotification = item;
             });
-          });
+            _whatsappNotificationTimer = Timer(
+              _notificationDisplayDuration,
+              () {
+                if (!mounted) {
+                  return;
+                }
+                setState(() {
+                  _whatsappNotification = null;
+                });
+              },
+            );
+          } else {
+            _generalNotificationTimer?.cancel();
+            setState(() {
+              _generalNotification = item;
+            });
+            _generalNotificationTimer = Timer(
+              _notificationDisplayDuration,
+              () {
+                if (!mounted) {
+                  return;
+                }
+                setState(() {
+                  _generalNotification = null;
+                });
+              },
+            );
+          }
         });
   }
 
@@ -868,7 +922,8 @@ class _ChargingOverlayScreenState extends State<ChargingOverlayScreen>
     _closeTimer?.cancel();
     _clockTimer?.cancel();
     _estimateTimer?.cancel();
-    _notificationTimer?.cancel();
+    _generalNotificationTimer?.cancel();
+    _whatsappNotificationTimer?.cancel();
     _subscription?.cancel();
     _notificationSubscription?.cancel();
     _introController.dispose();
@@ -1087,30 +1142,71 @@ class _ChargingOverlayScreenState extends State<ChargingOverlayScreen>
                       ),
                     ),
                     Align(
-                      alignment: Alignment.topCenter,
+                      alignment: Alignment.bottomRight,
                       child: SafeArea(
                         child: Padding(
-                          padding: const EdgeInsets.only(top: 18),
+                          padding: const EdgeInsets.fromLTRB(20, 20, 24, 22),
                           child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 280),
+                            duration: _notificationTransitionDuration,
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
                             transitionBuilder: (child, animation) =>
                                 FadeTransition(
                                   opacity: animation,
                                   child: SlideTransition(
-                                    position: Tween(
-                                      begin: const Offset(0, -0.14),
+                                    position: Tween<Offset>(
+                                      begin: const Offset(0, 0.22),
                                       end: Offset.zero,
                                     ).animate(animation),
                                     child: child,
                                   ),
                                 ),
-                            child: _notificationItem == null
+                            child: _generalNotification == null
                                 ? const SizedBox.shrink()
                                 : _NotificationBanner(
                                     key: ValueKey<String>(
-                                      '${_notificationItem!.appName}-${_notificationItem!.title}-${_notificationItem!.message}',
+                                      'general-${_generalNotification!.dedupeKey}',
                                     ),
-                                    item: _notificationItem!,
+                                    item: _generalNotification!,
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.bottomLeft,
+                      child: SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 20, 20, 22),
+                          child: AnimatedSwitcher(
+                            duration: _notificationTransitionDuration,
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: Tween<Offset>(
+                                      begin: const Offset(-0.22, 0.08),
+                                      end: Offset.zero,
+                                    ).animate(animation),
+                                    child: ScaleTransition(
+                                      scale: Tween<double>(
+                                        begin: 0.94,
+                                        end: 1.0,
+                                      ).animate(animation),
+                                      alignment: Alignment.bottomLeft,
+                                      child: child,
+                                    ),
+                                  ),
+                                ),
+                            child: _whatsappNotification == null
+                                ? const SizedBox.shrink()
+                                : _WhatsAppNotificationBanner(
+                                    key: ValueKey<String>(
+                                      'whatsapp-${_whatsappNotification!.dedupeKey}',
+                                    ),
+                                    item: _whatsappNotification!,
                                   ),
                           ),
                         ),
@@ -1321,32 +1417,38 @@ class _NotificationBanner extends StatelessWidget {
     final body = item.message.isNotEmpty ? item.message : item.title;
 
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 520),
+      constraints: const BoxConstraints(maxWidth: 420),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFF09111D).withValues(alpha: 0.88),
+          color: const Color(0xFF09111D).withValues(alpha: 0.86),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF8CC2FF).withValues(alpha: 0.12),
-              blurRadius: 24,
+              color: const Color(0xFF8CC2FF).withValues(alpha: 0.14),
+              blurRadius: 28,
               spreadRadius: 4,
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.08),
+            _NotificationAvatar(
+              iconBytes: item.iconBytes,
+              backgroundColor: Colors.white.withValues(alpha: 0.08),
+              fallback: const Icon(
+                Icons.notifications_none_rounded,
+                size: 22,
+                color: Colors.white,
               ),
-              child: const Icon(Icons.notifications_none_rounded, size: 20),
             ),
             const SizedBox(width: 14),
             Flexible(
@@ -1360,6 +1462,7 @@ class _NotificationBanner extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
                       color: Colors.white54,
+                      letterSpacing: 0.3,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -1390,6 +1493,182 @@ class _NotificationBanner extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _WhatsAppNotificationBanner extends StatelessWidget {
+  const _WhatsAppNotificationBanner({super.key, required this.item});
+
+  final OverlayNotificationItem item;
+
+  static const Color _whatsappDeep = Color(0xFF075E54);
+  static const Color _whatsappTeal = Color(0xFF128C7E);
+  static const Color _whatsappGreen = Color(0xFF25D366);
+  static const Color _bubbleHighlight = Color(0xFFE5F8EE);
+
+  @override
+  Widget build(BuildContext context) {
+    final sender = item.title.isNotEmpty ? item.title : item.appName;
+    final message = item.message;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 380),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 18, 14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [_whatsappDeep, _whatsappTeal],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(22),
+            topRight: Radius.circular(22),
+            bottomRight: Radius.circular(22),
+            bottomLeft: Radius.circular(6),
+          ),
+          border: Border.all(
+            color: _whatsappGreen.withValues(alpha: 0.35),
+            width: 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: _whatsappGreen.withValues(alpha: 0.32),
+              blurRadius: 28,
+              spreadRadius: 2,
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 18,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _NotificationAvatar(
+              iconBytes: item.iconBytes,
+              backgroundColor: Colors.white.withValues(alpha: 0.22),
+              ring: _whatsappGreen,
+              fallback: const Icon(
+                Icons.chat_bubble_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(
+                        Icons.verified_rounded,
+                        size: 13,
+                        color: _whatsappGreen,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'WhatsApp',
+                        style: TextStyle(
+                          color: Color(0xFF8FFFB5),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    sender,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (message.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      message,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _bubbleHighlight,
+                        fontSize: 13.5,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NotificationAvatar extends StatelessWidget {
+  const _NotificationAvatar({
+    required this.iconBytes,
+    required this.backgroundColor,
+    required this.fallback,
+    this.ring,
+    this.size = 42,
+  });
+
+  final Uint8List? iconBytes;
+  final Color backgroundColor;
+  final Widget fallback;
+  final Color? ring;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final avatar = Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: backgroundColor,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: iconBytes != null
+          ? Image.memory(
+              iconBytes!,
+              fit: BoxFit.cover,
+              width: size,
+              height: size,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, __, ___) => fallback,
+            )
+          : fallback,
+    );
+
+    if (ring == null) {
+      return avatar;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: ring!.withValues(alpha: 0.85), width: 1.4),
+      ),
+      child: avatar,
     );
   }
 }

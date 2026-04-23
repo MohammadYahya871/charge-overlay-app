@@ -6,6 +6,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.BatteryManager
@@ -16,6 +20,7 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 object Channels {
     const val METHOD_CHANNEL = "charge_overlay_app/methods"
@@ -274,10 +279,67 @@ object NotificationAccessHelper {
                 context.packageManager.getApplicationLabel(appInfo).toString()
             }.getOrDefault(sbn.packageName)
 
-        return mapOf(
+        val payload = mutableMapOf<String, Any>(
             "appName" to appName,
             "title" to title,
             "message" to message,
+            "packageName" to sbn.packageName,
         )
+
+        extractIconBytes(context, sbn)?.let { payload["iconBytes"] = it }
+
+        return payload
+    }
+
+    private fun extractIconBytes(context: Context, sbn: StatusBarNotification): ByteArray? {
+        val notification = sbn.notification
+        val extras = notification.extras
+
+        (extras.getParcelable(Notification.EXTRA_LARGE_ICON_BIG) as? Bitmap)?.let {
+            bitmapToPngBytes(it)?.let { bytes -> return bytes }
+        }
+        (extras.getParcelable(Notification.EXTRA_LARGE_ICON) as? Bitmap)?.let {
+            bitmapToPngBytes(it)?.let { bytes -> return bytes }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            notification.getLargeIcon()?.loadDrawable(context)?.let { drawable ->
+                drawableToPngBytes(drawable)?.let { return it }
+            }
+        }
+
+        return runCatching {
+            val appInfo = context.packageManager.getApplicationInfo(sbn.packageName, 0)
+            val drawable = context.packageManager.getApplicationIcon(appInfo)
+            drawableToPngBytes(drawable)
+        }.getOrNull()
+    }
+
+    private fun bitmapToPngBytes(bitmap: Bitmap): ByteArray? {
+        if (bitmap.width <= 0 || bitmap.height <= 0) {
+            return null
+        }
+        return runCatching {
+            ByteArrayOutputStream().use { output ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                output.toByteArray()
+            }
+        }.getOrNull()
+    }
+
+    private fun drawableToPngBytes(drawable: Drawable): ByteArray? {
+        if (drawable is BitmapDrawable) {
+            drawable.bitmap?.let { return bitmapToPngBytes(it) }
+        }
+
+        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
+        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 128
+        return runCatching {
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmapToPngBytes(bitmap)
+        }.getOrNull()
     }
 }
